@@ -59,3 +59,9 @@ CMakeCache.txt
 *.cmake
 compile_commands.json
 build/*
+
+# clangd config
+.clangd
+
+# clangd cache
+.cache
