@@ -20,9 +20,14 @@ StateTransition *create_and_transition(StateTransition *lhs, StateTransition *rh
 BehNode *sequence(const std::vector<BehNode*> &nodes);
 BehNode *selector(const std::vector<BehNode*> &nodes);
 
+BehNode *parallel(const std::vector<BehNode*> &nodes);
+BehNode *negate(BehNode *node);
+
 BehNode *move_to_entity(flecs::entity entity, const char *bb_name);
 BehNode *is_low_hp(float thres);
 BehNode *find_enemy(flecs::entity entity, float dist, const char *bb_name);
 BehNode *flee(flecs::entity entity, const char *bb_name);
 BehNode *patrol(flecs::entity entity, float patrol_dist, const char *bb_name);
 
+BehNode *find_nearest_buff(flecs::entity entity, const char *found_buff_name);
+BehNode *find_next_way_point(flecs::entity entity, flecs::entity way_point, const char *found_way_point_name);

@@ -1,53 +1,115 @@
 #include "aiLibrary.h"
+#include "behaviourTree.h"
 #include "ecsTypes.h"
 #include "aiUtils.h"
+#include "flecs/addons/cpp/entity.hpp"
 #include "math.h"
 #include "raylib.h"
 #include "blackboard.h"
+#include <limits>
+#include <memory>
 
-struct CompoundNode : public BehNode
+class CompoundNode : public BehNode
 {
-  std::vector<BehNode*> nodes;
+protected:
+  std::vector<std::unique_ptr<BehNode>> nodes_;
 
-  virtual ~CompoundNode()
+public:
+  CompoundNode(const std::vector<BehNode*>& nodes)
   {
-    for (BehNode *node : nodes)
-      delete node;
-    nodes.clear();
+    for (auto node : nodes)
+    {
+      nodes_.emplace_back(node);
+    }
   }
 
   CompoundNode &pushNode(BehNode *node)
   {
-    nodes.push_back(node);
+    nodes_.emplace_back(node);
     return *this;
   }
 };
 
-struct Sequence : public CompoundNode
+class Sequence : public CompoundNode
 {
-  BehResult update(flecs::world &ecs, flecs::entity entity, Blackboard &bb) override
+public:
+  Sequence(const std::vector<BehNode*>& nodes)
+    : CompoundNode(nodes)
   {
-    for (BehNode *node : nodes)
+  }
+
+  BehResult update(flecs::world &world, flecs::entity entity, Blackboard &blackboard) override
+  {
+    for (const auto& node : nodes_)
     {
-      BehResult res = node->update(ecs, entity, bb);
-      if (res != BEH_SUCCESS)
-        return res;
+      auto result = node->update(world, entity, blackboard);
+      if (result != BEH_SUCCESS)
+      {
+        return result;
+      }
     }
     return BEH_SUCCESS;
   }
 };
 
-struct Selector : public CompoundNode
+class Selector : public CompoundNode
 {
-  BehResult update(flecs::world &ecs, flecs::entity entity, Blackboard &bb) override
+public:
+  Selector(const std::vector<BehNode*>& nodes)
+    : CompoundNode(nodes)
   {
-    for (BehNode *node : nodes)
+  }
+
+  BehResult update(flecs::world &world, flecs::entity entity, Blackboard &blackboard) override
+  {
+    for (const auto& node : nodes_)
     {
-      BehResult res = node->update(ecs, entity, bb);
-      if (res != BEH_FAIL)
-        return res;
+      auto result = node->update(world, entity, blackboard);
+      if (result != BEH_FAIL)
+      {
+        return result;
+      }
     }
     return BEH_FAIL;
+  }
+};
+
+class ParallelNode : public CompoundNode
+{
+public:
+  ParallelNode(const std::vector<BehNode*>& nodes)
+    : CompoundNode(nodes)
+  {
+  }
+
+  BehResult update(flecs::world &world, flecs::entity entity, Blackboard &blackboard) override
+  {
+    for (const auto& node : nodes_)
+    {
+      auto result = node->update(world, entity, blackboard);
+      if (result != BEH_RUNNING)
+      {
+        return result;
+      }
+    }
+    return BEH_RUNNING;
+  }
+};
+
+class NegatorNode : public BehNode
+{
+  std::unique_ptr<BehNode> node_;
+
+public:
+  NegatorNode(BehNode* node)
+    : node_{node}
+  {
+  }
+
+  BehResult update(flecs::world &world, flecs::entity entity, Blackboard &blackboard) override
+  {
+    auto result = node_->update(world, entity, blackboard);
+    return result == BEH_FAIL ? BEH_SUCCESS : BEH_FAIL;
   }
 };
 
@@ -197,21 +259,82 @@ struct Patrol : public BehNode
   }
 };
 
+class FindNearestBuff final : public BehNode
+{
+  size_t found_buff_index_;
+
+public:
+  FindNearestBuff(flecs::entity entity, const char *found_buff_name)
+    : found_buff_index_{reg_entity_blackboard_var<flecs::entity>(entity, found_buff_name)}
+  {
+  }
+
+  BehResult update(flecs::world &world, flecs::entity entity, Blackboard &blackboard) override
+  {
+    flecs::entity nearest_buff{};
+    auto minimal_distance = std::numeric_limits<float>::max();
+
+    if (!entity.has<Position>())
+    {
+      return BEH_FAIL;
+    }
+
+    auto position = *entity.get<Position>();
+
+    world.query<Position, BuffTag>().each(
+      [&](flecs::entity buff, const Position& buff_position, [[maybe_unused]] BuffTag buff_tag) {
+        auto distance = dist(position, buff_position);
+        if (minimal_distance > distance)
+        {
+          nearest_buff = buff;
+          minimal_distance = distance;
+        }
+      }
+    );
+
+    blackboard.set(found_buff_index_, nearest_buff);
+
+    return BEH_SUCCESS;
+  }
+};
+
+class FindNextWayPoint : public BehNode
+{
+  size_t found_way_point_index_;
+
+public:
+  FindNextWayPoint(flecs::entity entity, flecs::entity way_point, const char *found_way_point_name)
+    : found_way_point_index_{reg_entity_blackboard_var<flecs::entity>(entity, found_way_point_name)}
+  {
+    entity.get_mut<Blackboard>()->set<flecs::entity>(found_way_point_index_, way_point);
+  }
+
+  BehResult update([[maybe_unused]] flecs::world &world, [[maybe_unused]] flecs::entity entity, Blackboard &blackboard) override
+  {
+    auto next_way_point = blackboard.get<flecs::entity>(found_way_point_index_).get<WayPoint>()->next_way_point;
+    blackboard.set<flecs::entity>(found_way_point_index_, next_way_point);
+    return BEH_SUCCESS;
+  }
+};
 
 BehNode *sequence(const std::vector<BehNode*> &nodes)
 {
-  Sequence *seq = new Sequence;
-  for (BehNode *node : nodes)
-    seq->pushNode(node);
-  return seq;
+  return new Sequence{nodes};
 }
 
 BehNode *selector(const std::vector<BehNode*> &nodes)
 {
-  Selector *sel = new Selector;
-  for (BehNode *node : nodes)
-    sel->pushNode(node);
-  return sel;
+  return new Selector{nodes};
+}
+
+BehNode *parallel(const std::vector<BehNode*> &nodes)
+{
+  return new ParallelNode{nodes};
+}
+
+BehNode *negate(BehNode *node)
+{
+  return new NegatorNode{node};
 }
 
 BehNode *move_to_entity(flecs::entity entity, const char *bb_name)
@@ -239,3 +362,12 @@ BehNode *patrol(flecs::entity entity, float patrol_dist, const char *bb_name)
   return new Patrol(entity, patrol_dist, bb_name);
 }
 
+BehNode *find_nearest_buff(flecs::entity entity, const char *found_buff_name)
+{
+  return new FindNearestBuff{entity, found_buff_name};
+}
+
+BehNode *find_next_way_point(flecs::entity entity, flecs::entity way_point, const char *found_way_point_name)
+{
+  return new FindNextWayPoint{entity, way_point, found_way_point_name};
+}

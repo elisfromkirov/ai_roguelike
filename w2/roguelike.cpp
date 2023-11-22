@@ -1,10 +1,77 @@
 #include "roguelike.h"
+#include "behaviourTree.h"
 #include "ecsTypes.h"
 #include "raylib.h"
 #include "stateMachine.h"
 #include "aiLibrary.h"
 #include "blackboard.h"
+#include <limits>
 
+static void attach_gatherer_behaviour(flecs::entity entity)
+{
+  constexpr auto enemy_to_attack = "enemy_to_attack";
+  constexpr auto buff_to_gather = "buff_to_gather";
+
+  entity.add<BuffConsumerTag>();
+
+  entity.set(Blackboard{});
+
+  auto root =
+    selector({
+      sequence({
+        find_enemy(entity, 2.f, enemy_to_attack),
+        move_to_entity(entity, enemy_to_attack)
+      }),
+      sequence({
+        find_nearest_buff(entity, buff_to_gather),
+        move_to_entity(entity, buff_to_gather)
+      }),
+      sequence({
+        find_enemy(entity, std::numeric_limits<float>::max(), enemy_to_attack),
+        move_to_entity(entity, enemy_to_attack),
+      })
+  });
+
+  entity.set(BehaviourTree{root});
+}
+
+static flecs::entity create_way_point(flecs::world &world, const Position& position, Color color) {
+  return world.entity()
+    .set(position)
+    .set(Color{color});
+}
+
+static void attach_guard_behaviour(flecs::entity entity, flecs::world &world, const std::vector<Position>& positions, Color color)
+{
+  constexpr auto enemy_to_attack = "enemy_to_attack";
+  constexpr auto way_point = "way_point";
+
+  std::vector<flecs::entity> way_points{};
+  for (const auto& position : positions)
+  {
+    way_points.push_back(create_way_point(world, position, color));
+  }
+  for (size_t i = 0; i < positions.size(); ++i)
+  {
+    way_points[i].set(WayPoint{way_points[(i + 1) % positions.size()]});
+  }
+
+  entity.set(Blackboard{});
+
+  auto root =
+    selector({
+      sequence({
+        find_enemy(entity, 2.f, enemy_to_attack),
+        move_to_entity(entity, enemy_to_attack)
+      }),
+      sequence({
+        move_to_entity(entity, way_point),
+        find_next_way_point(entity, way_points[0], way_point)
+      }),
+    });
+
+  entity.set(BehaviourTree{root});
+}
 
 static void create_minotaur_beh(flecs::entity e)
 {
@@ -57,12 +124,14 @@ static void create_player(flecs::world &ecs, int x, int y, const char *texture_s
     .set(NumActions{2, 0})
     .set(Color{255, 255, 255, 255})
     .add<TextureSource>(textureSrc)
-    .set(MeleeDamage{50.f});
+    .set(MeleeDamage{50.f})
+    .add<BuffConsumerTag>();
 }
 
 static void create_heal(flecs::world &ecs, int x, int y, float amount)
 {
   ecs.entity()
+    .add<BuffTag>()
     .set(Position{x, y})
     .set(HealAmount{amount})
     .set(Color{0xff, 0x44, 0x44, 0xff});
@@ -71,6 +140,7 @@ static void create_heal(flecs::world &ecs, int x, int y, float amount)
 static void create_powerup(flecs::world &ecs, int x, int y, float amount)
 {
   ecs.entity()
+    .add<BuffTag>()
     .set(Position{x, y})
     .set(PowerupAmount{amount})
     .set(Color{0xff, 0xff, 0x00, 0xff});
@@ -133,19 +203,17 @@ void init_roguelike(flecs::world &ecs)
         UnloadTexture(texture);
       });
 
-  create_minotaur_beh(create_monster(ecs, 5, 5, Color{0xee, 0x00, 0xee, 0xff}, "minotaur_tex"));
-  create_minotaur_beh(create_monster(ecs, 10, -5, Color{0xee, 0x00, 0xee, 0xff}, "minotaur_tex"));
-  create_minotaur_beh(create_monster(ecs, -5, -5, Color{0x11, 0x11, 0x11, 0xff}, "minotaur_tex"));
-  create_minotaur_beh(create_monster(ecs, -5, 5, Color{0, 255, 0, 255}, "minotaur_tex"));
-
   create_player(ecs, 0, 0, "swordsman_tex");
 
-  create_powerup(ecs, 7, 7, 10.f);
-  create_powerup(ecs, 10, -6, 10.f);
-  create_powerup(ecs, 10, -4, 10.f);
+  attach_gatherer_behaviour(create_monster(ecs, -5, 5, Color{0xff, 0x00, 0xff, 0xff}, "minotaur_tex"));
 
-  create_heal(ecs, -5, -5, 50.f);
-  create_heal(ecs, -5, 5, 50.f);
+  create_powerup(ecs, -3, -5, 10.f);
+  create_powerup(ecs, -7, 5, 10.f);
+
+  create_heal(ecs, -5,  5, 50.f);
+  create_heal(ecs, -6, -5, 50.f);
+
+  attach_guard_behaviour(create_monster(ecs, 7, 0, Color{0x00, 0xff, 0xff, 0xff}, "minotaur_tex"), ecs, {Position{7, 5}, Position{7, -5}}, Color{0x00, 0xff, 0xff, 0xff});
 }
 
 static bool is_player_acted(flecs::world &ecs)
@@ -227,12 +295,12 @@ static void process_actions(flecs::world &ecs)
     });
   });
 
-  static auto playerPickup = ecs.query<const IsPlayer, const Position, Hitpoints, MeleeDamage>();
+  static auto buffConsumers = ecs.query<const BuffConsumerTag, const Position, Hitpoints, MeleeDamage>();
   static auto healPickup = ecs.query<const Position, const HealAmount>();
   static auto powerupPickup = ecs.query<const Position, const PowerupAmount>();
   ecs.defer([&]
   {
-    playerPickup.each([&](const IsPlayer&, const Position &pos, Hitpoints &hp, MeleeDamage &dmg)
+    buffConsumers.each([&](const BuffConsumerTag&, const Position &pos, Hitpoints &hp, MeleeDamage &dmg)
     {
       healPickup.each([&](flecs::entity entity, const Position &ppos, const HealAmount &amt)
       {
