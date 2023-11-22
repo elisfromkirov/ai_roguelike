@@ -7,6 +7,8 @@
 #include "math.h"
 #include "dungeonGen.h"
 #include "dungeonUtils.h"
+#include <queue>
+#include <set>
 
 template<typename T>
 static size_t coord_to_idx(T x, T y, size_t w)
@@ -184,11 +186,271 @@ static std::vector<Position> find_path_a_star(const char *input, size_t width, s
   return std::vector<Position>();
 }
 
+constexpr bool is_inf(const float val)
+{
+  return fabs(val - FLT_MAX) < FLT_EPSILON;
+}
+
+using Weight = float;
+
+class Map
+{
+public:
+  explicit Map(const char *map, std::size_t width, std::size_t height)
+    : underlying_map_(map)
+    , width_(width)
+    , height_(height)
+  {
+  }
+
+  float get_weight(std::size_t index) const
+  {
+    if (underlying_map_[index] == '#')
+    {
+      return FLT_MAX;
+    }
+    if (underlying_map_[index] == 'o')
+    {
+      return 10.f;
+    }
+    return 1.f;
+  }
+
+  std::size_t get_width() const
+  {
+    return width_;
+  }
+
+  std::size_t get_height() const
+  {
+    return height_;
+  }
+
+private:
+  const char *underlying_map_;
+  std::size_t width_;
+  std::size_t height_;
+};
+
+class PathFinder
+{
+  class PositionComparer
+  {
+  public:
+    using size_type = std::size_t;
+    using value_type = Position;
+    using reference = value_type&;
+    using const_reference = const value_type&;
+    using pointer = value_type*;
+    using const_pointer = const value_type*;
+
+
+  public:
+    explicit PositionComparer(PathFinder& path_finder)
+      : path_finder_(path_finder)
+    {
+    }
+
+    bool operator()(const Position &lhs, const Position &rhs) const
+    {
+      return path_finder_.get_f_score(rhs) < path_finder_.get_f_score(lhs);
+    }
+
+  private:
+    PathFinder& path_finder_;
+  };
+
+public:
+  PathFinder(const char *map, std::size_t width, std::size_t height, bool enable_visualisation = true)
+    : map_(map, width, height)
+    , g_score_(width * height, FLT_MAX)
+    , prev_(width * height, Position{})
+    , open_(PositionComparer(*this))
+    , closed_()
+    , incons_()
+    , source_()
+    , target_()
+    , epsilon_()
+    , enable_visualisation_(enable_visualisation)
+  {
+  }
+
+  std::vector<Position> find_path(const Position &source, const Position &target, const float epsilon = 5.f, const float step = 0.5f)
+  {
+    reset(source, target, epsilon);
+
+    improve_path();
+
+    while (estimate_epsilon_hatch() > 1.f)
+    {
+      epsilon_ -= step;
+
+      // copy open_ positions to incons and then rebuild a queue, because epsilon has been changed
+      while (!open_.empty())
+      {
+        incons_.push_back(open_.top());
+        open_.pop();
+      }
+      while (!incons_.empty())
+      {
+        open_.push(incons_.back());
+        incons_.pop_back();
+      }
+
+      closed_.clear();
+
+      improve_path();
+    }
+
+    return reconstruct_path();
+  }
+
+  Weight get_f_score(const Position &position) const
+  {
+    return g_score_[position_to_index(position)] + epsilon_ * heuristic(position, target_);
+  }
+
+private:
+  void reset(const Position &source, const Position &target, const float epsilon)
+  {
+    std::fill(std::begin(g_score_), std::end(g_score_), FLT_MAX);
+    g_score_[position_to_index(source)] = 0.f;
+
+    std::fill(std::begin(prev_), std::end(prev_), Position{});
+
+    while (!open_.empty())
+    {
+      open_.pop();
+    }
+    open_.push(source);
+
+    closed_.clear();
+
+    incons_.clear();
+
+    source_ = source;
+    target_ = target;
+
+    epsilon_ = epsilon;
+  }
+
+  std::size_t position_to_index(const Position &position) const
+  {
+    return static_cast<std::size_t>(position.x) + static_cast<std::size_t>(position.y) * map_.get_width();
+  }
+
+  void improve_path()
+  {
+    while (!open_.empty() && get_f_score(target_) > get_f_score(open_.top()))
+    {
+      const auto position = open_.top();
+      open_.pop();
+
+      if (enable_visualisation_)
+      {
+        const Rectangle rect = {float(position.x), float(position.y), 1.f, 1.f};
+        DrawRectangleRec(rect, GetColor(0xbbbbbbff));
+      }
+
+      closed_.insert(position);
+
+      improve_neighbour(position, Position{position.x + 1, position.y + 0});
+      improve_neighbour(position, Position{position.x - 1, position.y + 0});
+      improve_neighbour(position, Position{position.x + 0, position.y + 1});
+      improve_neighbour(position, Position{position.x + 0, position.y - 1});
+    }
+  }
+
+  void improve_neighbour(const Position &position, const Position &neighbour_position)
+  {
+    if (neighbour_position.x < 0 || static_cast<std::size_t>(neighbour_position.x) >= map_.get_width())
+    {
+      return;
+    }
+
+    if (neighbour_position.y < 0 || static_cast<std::size_t>(neighbour_position.y) >= map_.get_height())
+    {
+      return;
+    }
+
+    auto g_score = g_score_[position_to_index(position)] + map_.get_weight(position_to_index(neighbour_position));
+    if (g_score_[position_to_index(neighbour_position)] > g_score)
+    {
+      g_score_[position_to_index(neighbour_position)] = g_score;
+      prev_[position_to_index(neighbour_position)] = position;
+
+      if (closed_.contains(neighbour_position))
+      {
+        incons_.push_back(neighbour_position);
+      }
+      else
+      {
+        open_.push(neighbour_position);
+      }
+    }
+  }
+
+  Weight estimate_epsilon_hatch()
+  {
+    auto min_epsilon = FLT_MAX;
+    if (!open_.empty())
+    {
+      min_epsilon = std::min(min_epsilon, get_f_score(open_.top()));
+    }
+    for (const auto &position : incons_)
+    {
+      min_epsilon = std::min(min_epsilon, get_f_score(position));
+    }
+
+    if (is_inf(min_epsilon) || is_inf(g_score_[position_to_index(target_)]))
+    {
+      return epsilon_;
+    }
+    return std::min(epsilon_, g_score_[position_to_index(target_)] / min_epsilon);
+  }
+
+  std::vector<Position> reconstruct_path()
+  {
+    if (is_inf(g_score_[position_to_index(target_)]))
+    {
+      return {};
+    }
+
+    std::vector<Position> path{};
+    auto prev = target_;
+    while (true)
+    {
+      path.push_back(prev);
+      prev = prev_[position_to_index(prev)];
+      if (prev == source_)
+      {
+        path.push_back(source_);
+        return path;
+      }
+    }
+  }
+
+private:
+  Map map_;
+  std::vector<Weight> g_score_; ///< Map from index associated with position to minimal weight of path from source position to position
+  std::vector<Position> prev_;
+  std::priority_queue<Position, std::vector<Position>, PositionComparer> open_;
+  std::set<Position> closed_;
+  std::vector<Position> incons_;
+  Position source_;
+  Position target_;
+  float epsilon_;
+  bool enable_visualisation_;
+};
+
 void draw_nav_data(const char *input, size_t width, size_t height, Position from, Position to, float weight)
 {
   draw_nav_grid(input, width, height);
-  std::vector<Position> path = find_path_a_star(input, width, height, from, to, weight);
-  //std::vector<Position> path = find_ida_star_path(input, width, height, from, to);
+
+  PathFinder path_finder{input, width, height};
+  std::vector<Position> path = path_finder.find_path(from, to);
+  // std::vector<Position> path = find_path_a_star(input, width, height, from, to, weight);
+  // std::vector<Position> path = find_ida_star_path(input, width, height, from, to);
   draw_path(path);
 }
 

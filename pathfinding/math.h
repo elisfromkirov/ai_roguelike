@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 template<typename T>
 T square(T v) { return v * v; }
 
@@ -12,6 +14,7 @@ struct Position
 inline bool operator==(const Position &lhs, const Position &rhs) { return lhs.x == rhs.x && lhs.y == rhs.y; }
 inline bool operator!=(const Position &lhs, const Position &rhs) { return !(lhs == rhs); }
 
+inline bool operator<(const Position& lhs, const Position& rhs) { return std::tie(lhs.x, lhs.y) < std::tie(rhs.x, rhs.y); }
 
 inline Position operator-(const Position &lhs, const Position &rhs)
 {
