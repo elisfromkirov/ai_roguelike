@@ -1,7 +1,14 @@
-#include "pathfinder.h"
 #include "dungeonUtils.h"
+#include "ecsTypes.h"
 #include "math.h"
+#include "pathfinder.h"
+
 #include <algorithm>
+#include <cfloat>
+#include <limits>
+#include <queue>
+
+constexpr auto kMegaTileSize = 10;
 
 float heuristic(IVec2 lhs, IVec2 rhs)
 {
@@ -239,3 +246,204 @@ void prebuild_map(flecs::world &ecs)
   });
 }
 
+bool tile_inside_dungeon(const DungeonData& data, IVec2 tile)
+{
+  return 0 <= tile.x && 0 <= tile.y && tile.x < static_cast<int>(data.width) && tile.y < static_cast<int>(data.height);
+}
+
+std::vector<float> make_scores(const DungeonData& data, const DungeonPortals& portals, IVec2 tile)
+{
+  std::vector<float> scores{};
+
+  auto mega_tile = IVec2{tile.x / kMegaTileSize, tile.y / kMegaTileSize};
+
+  auto left_down = IVec2{mega_tile.x * kMegaTileSize, mega_tile.y * kMegaTileSize};
+  auto right_up = IVec2{(mega_tile.x + 1) * kMegaTileSize, (mega_tile.y + 1) * kMegaTileSize};
+
+  for (const auto& portal : portals.portals)
+  {
+    auto portal_tile = portal.to_tile();
+    auto portal_mega_tile = IVec2{portal_tile.x / kMegaTileSize, portal_tile.y / kMegaTileSize};
+    if (mega_tile == portal_mega_tile)
+    {
+      auto path = find_path_a_star(data, tile, portal_tile, left_down, right_up);
+      scores.push_back(path.size());
+    }
+    else
+    {
+      scores.push_back(std::numeric_limits<float>::max());
+    }
+  }
+
+  return scores;
+}
+
+class Comparer
+{
+public:
+  using size_type = size_t;
+  using value_type = size_t;
+  using reference = value_type&;
+  using const_reference = const value_type&;
+  using pointer = value_type*;
+  using const_pointer = const value_type*;
+
+public:
+  Comparer(const std::vector<float>& g_score, const DungeonPortals& portals, IVec2 target, size_t target_index)
+    : g_score_{g_score}
+    , portals_{portals}
+    , target_{target}
+    , target_index_{target_index}
+  {
+  }
+
+  bool operator()(const size_t lhs, const size_t rhs) const
+  {
+    auto lhs_f_score = 0.f;
+    if (lhs != target_index_)
+    {
+      lhs_f_score = g_score_[lhs] + heuristic(portals_.portals[lhs].to_tile(), target_);
+    }
+
+    auto rhs_f_score = 0.f;
+    if (rhs != target_index_)
+    {
+      rhs_f_score = g_score_[rhs] + heuristic(portals_.portals[rhs].to_tile(), target_);
+    }
+
+    return rhs_f_score < lhs_f_score;
+  }
+
+private:
+  const std::vector<float>& g_score_;
+  const DungeonPortals& portals_;
+  const IVec2 target_;
+  const size_t target_index_;
+};
+
+std::vector<IVec2> find_path_hierarchical(const DungeonData& data, const DungeonPortals& portals, IVec2 source, IVec2 target)
+{
+  if (!tile_inside_dungeon(data, source) || !tile_inside_dungeon(data, target))
+  {
+    return std::vector<IVec2>{};
+  }
+
+  if (source == target)
+  {
+    return std::vector<IVec2>{};
+  }
+
+  const auto source_mega_tile = IVec2{source.x / kMegaTileSize, source.y / kMegaTileSize};
+  const auto target_mega_tile = IVec2{target.x / kMegaTileSize, target.y / kMegaTileSize};
+  if (source_mega_tile == target_mega_tile)
+  {
+    const auto left_down = IVec2{source_mega_tile.x * kMegaTileSize, source_mega_tile.y * kMegaTileSize};
+    const auto right_up = IVec2{(source_mega_tile.x + 1) * kMegaTileSize, (source_mega_tile.y + 1) * kMegaTileSize};
+    const auto path = find_path_a_star(data,source, target, left_down, right_up);
+    if (!path.empty())
+    {
+      return path;
+    }
+  }
+
+  const auto source_scores = make_scores(data, portals, source); // score of path from source to i'th portal's center tile
+  const auto target_scores = make_scores(data, portals, source); // score of path from i'th portal's center tile target to
+
+  const auto source_index = portals.portals.size();
+  const auto target_index = portals.portals.size() + 1;
+
+  const auto total_indexes = portals.portals.size() + 2;
+
+  std::vector<float> g_score(total_indexes, std::numeric_limits<float>::max());
+  g_score[source_index] = 0;
+
+  std::priority_queue<std::size_t, std::vector<std::size_t>, Comparer> open{Comparer{g_score, portals, target, target_index}};
+  open.push(source_index);
+
+  std::vector<bool> closed(total_indexes, false);
+
+  std::vector<size_t> prev(total_indexes, total_indexes);
+
+  while (!open.empty() && open.top() != target_index)
+  {
+    auto index = open.top();
+    open.pop();
+    closed[index] = true;
+
+    if (index == source_index)
+    {
+      for (size_t i = 0; i < source_scores.size(); ++i)
+      {
+        if (!closed[i] && source_scores[i] < g_score[i])
+        {
+          g_score[i] = source_scores[i];
+          prev[i] = source_index;
+          open.push(i);
+        }
+      }
+    }
+    else
+    {
+      for (const auto& conn : portals.portals[index].conns)
+      {
+        auto tentative_g_score = g_score[conn.get_index()] + conn.get_score();
+        if (!closed[conn.get_index()] || tentative_g_score < g_score[conn.get_index()])
+        {
+          g_score[conn.get_index()] = tentative_g_score;
+          prev[conn.get_index()] = index;
+          open.push(conn.get_index());
+        }
+      }
+      if (target_scores[index] < g_score[target_index])
+      {
+        g_score[target_index] = target_scores[index];
+        prev[target_index] = index;
+        open.push(target_index);
+      }
+    }
+  }
+
+  if (open.empty() || open.top() != target_index)
+  {
+    return std::vector<IVec2>{};
+  }
+
+  std::vector<IVec2> path{};
+
+  {
+    const auto portal_tile = portals.portals[prev[target_index]].to_tile();
+
+    const auto left_down = IVec2{std::min(target.x, portal_tile.x), std::min(target.y, portal_tile.y)};
+    const auto right_up = IVec2{std::max(target.x, portal_tile.x) + 1, std::max(target.y, portal_tile.y) + 1};
+
+    const auto intermediate_path = find_path_a_star(data, portal_tile, target, left_down, right_up);
+    std::copy(std::begin(intermediate_path), std::end(intermediate_path), std::back_inserter(path));
+  }
+
+  auto index = prev[target_index];
+  while (prev[index] != source_index)
+  {
+    const auto portal_tile = portals.portals[index].to_tile();
+    const auto prev_portal_tile = portals.portals[prev[index]].to_tile();
+
+    const auto left_down = IVec2{std::min(portal_tile.x, prev_portal_tile.x), std::min(portal_tile.y, prev_portal_tile.y)};
+    const auto right_up = IVec2{std::max(portal_tile.x, prev_portal_tile.x) + 1, std::max(portal_tile.y, prev_portal_tile.y) + 1};
+
+    const auto intermediate_path = find_path_a_star(data, prev_portal_tile, portal_tile, left_down, right_up);
+    std::copy(std::begin(intermediate_path), std::end(intermediate_path), std::back_inserter(path));
+
+    index = prev[index];
+  }
+
+  {
+    const auto portal_tile = portals.portals[index].to_tile();
+
+    const auto left_down = IVec2{std::min(source.x, portal_tile.x), std::min(source.y, portal_tile.y)};
+    const auto right_up = IVec2{std::max(source.x, portal_tile.x) + 1, std::max(source.y, portal_tile.y) + 1};
+
+    const auto intermediate_path = find_path_a_star(data, source, portal_tile, left_down, right_up);
+    std::copy(std::begin(intermediate_path), std::end(intermediate_path), std::back_inserter(path));
+  }
+
+  return path;
+}

@@ -1,4 +1,5 @@
 #include <raylib.h>
+#include "math.h"
 #include "shootEmUp.h"
 #include "ecsTypes.h"
 #include "rlikeObjects.h"
@@ -8,6 +9,17 @@
 #include "pathfinder.h"
 
 constexpr float tile_size = 64.f;
+
+void draw_path(const std::vector<IVec2>& path)
+{
+  constexpr auto color = GRAY;
+
+  for (size_t i = 0; i < path.size(); i++)
+  {
+    Rectangle rectangle = {path[i].x * tile_size, path[i].y * tile_size, tile_size, tile_size};
+    DrawRectangleRec(rectangle, color);
+  }
+}
 
 static void register_roguelike_systems(flecs::world &ecs)
 {
@@ -78,6 +90,11 @@ static void register_roguelike_systems(flecs::world &ecs)
       });
     });
 
+  constexpr auto invalid_tile = IVec2{-1, -1};
+
+  static auto source = invalid_tile;
+  static auto target = invalid_tile;
+
   static auto cameraQuery = ecs.query<const Camera2D>();
   ecs.system<const DungeonPortals, const DungeonData>()
     .each([&](const DungeonPortals &dp, const DungeonData &dd)
@@ -135,6 +152,26 @@ static void register_roguelike_systems(flecs::world &ecs)
                      16, WHITE);
           }
         }
+
+        auto hovered_tile = IVec2{int(mousePosition.x / tile_size), int(mousePosition.y / tile_size)};
+
+        if (IsMouseButtonPressed(0))
+        {
+          if (target == invalid_tile)
+          {
+            target = hovered_tile;
+          }
+          else
+          {
+            source = hovered_tile;
+            target = invalid_tile;
+          }
+        }
+
+        draw_path(find_path_hierarchical(dd, dp, source, target));
+
+        Rectangle rectangle{hovered_tile.x * tile_size, hovered_tile.y * tile_size, tile_size, tile_size};
+        DrawRectangleLinesEx(rectangle, 2, RED);
       });
     });
   steer::register_systems(ecs);
