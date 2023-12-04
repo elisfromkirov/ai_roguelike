@@ -24,7 +24,7 @@ static void attach_collective_behaviour(flecs::entity entity, const Base& base)
       random_move(),
       []([[maybe_unused]] Blackboard &blackboard)
       {
-        return 20.f;
+        return 40.f;
       }
     ),
     std::make_pair(
@@ -33,7 +33,7 @@ static void attach_collective_behaviour(flecs::entity entity, const Base& base)
       {
         auto distance_to_closest_ally = blackboard.get<float>(kDistanceToClosestAllyName);
         auto distance_to_base = blackboard.get<float>(kDistanceToBaseName);
-        return 20.f * std::max(0.f, Clamp(distance_to_closest_ally, 0.f, 5.f) + Clamp(distance_to_base, 0.f, 5.f));
+        return 10.f * std::max(0.f, Clamp(distance_to_closest_ally, 0.f, 5.f) + Clamp(distance_to_base, 0.f, 5.f));
       }
     ),
     std::make_pair(
