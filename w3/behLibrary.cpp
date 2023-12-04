@@ -366,7 +366,41 @@ struct PatchUp : public BehNode
   }
 };
 
+struct RandomMove : public BehNode
+{
+  BehResult update([[maybe_unused]] flecs::world &world, flecs::entity entity, [[maybe_unused]] Blackboard &blackboard) override
+  {
+    entity.set(
+      [&](Action &action)
+      {
+        action.action = GetRandomValue(EA_MOVE_START, EA_MOVE_END - 1);
+      }
+    );
+    return BEH_RUNNING;
+  }
+};
 
+struct MoveToBase : public BehNode
+{
+  BehResult update([[maybe_unused]] flecs::world &world, flecs::entity entity, [[maybe_unused]] Blackboard &blackboard) override
+  {
+    auto result = BEH_RUNNING;
+    entity.set(
+      [&](Action &action, const Position &position, const Base& base)
+      {
+        if (position != base.position)
+        {
+          action.action = move_towards(position, base.position);
+        }
+        else
+        {
+          result = BEH_SUCCESS;
+        }
+      }
+    );
+    return result;
+  }
+};
 
 BehNode *sequence(const std::vector<BehNode*> &nodes)
 {
@@ -429,4 +463,12 @@ BehNode *patch_up(float thres)
   return new PatchUp(thres);
 }
 
+BehNode *random_move()
+{
+  return new RandomMove{};
+}
 
+BehNode *move_to_base()
+{
+  return new MoveToBase{};
+}

@@ -1,8 +1,9 @@
 #pragma once
 
-#include <functional>
 #include "stateMachine.h"
 #include "behaviourTree.h"
+
+#include <functional>
 
 // states
 State *create_attack_enemy_state();
@@ -32,3 +33,6 @@ BehNode *find_enemy(flecs::entity entity, float dist, const char *bb_name);
 BehNode *flee(flecs::entity entity, const char *bb_name);
 BehNode *patrol(flecs::entity entity, float patrol_dist, const char *bb_name);
 BehNode *patch_up(float thres);
+
+BehNode *random_move();
+BehNode *move_to_base();

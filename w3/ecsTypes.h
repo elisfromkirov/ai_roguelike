@@ -111,6 +111,11 @@ struct IsPlayer {};
 
 struct WorldInfoGatherer {};
 
+constexpr auto kHitPointsName = "hit_points";
+constexpr auto kDistanceToBaseName = "distance_to_base";
+constexpr auto kDistanceToClosestAllyName = "distance_to_clesest_ally";
+constexpr auto kDistanceToClosestEnemyName = "distance_to_clesest_enemy";
+
 struct Team
 {
   int team = 0;
@@ -129,3 +134,7 @@ struct ActionLog
   size_t capacity = 5;
 };
 
+struct Base
+{
+  Position position;
+};
