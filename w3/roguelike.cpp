@@ -429,4 +429,3 @@ void print_stats(flecs::world &ecs)
     }
   });
 }
-
